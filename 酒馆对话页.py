@@ -74,6 +74,27 @@ __all__ = ['气泡', '对话页', '会话栏', '正文框']
 每次回收上限 = 20
 
 
+class _省略下拉(QComboBox):
+    """
+    一个 QComboBox，但**闭合时那格文字放不下就显示省略号**，不把窗口撑开。
+
+    名字是「接口名 · 模型文件名」，动不动几十个字。Qt 默认会把这个框撑到装下
+    最长的那条 —— 而那个宽度会成为**整个窗口的最小宽度**，窗口就被顶开了。
+    这里按当前宽度把显示文字**中间省略**（保住头尾，看得出是哪套），完整内容
+    进 tooltip。**弹出的那张列表不受影响**——它是另一个窗口，照样显示全。
+    """
+
+    def paintEvent(self, _事):
+        from PySide6.QtWidgets import QStyleOptionComboBox, QStylePainter, QStyle
+        画 = QStylePainter(self)
+        选 = QStyleOptionComboBox()
+        self.initStyleOption(选)
+        空 = max(20, self.width() - 34)      # 左右内边距 + 右边那个下拉箭头
+        选.currentText = self.fontMetrics().elidedText(选.currentText, Qt.ElideMiddle, 空)
+        画.drawComplexControl(QStyle.CC_ComboBox, 选)
+        画.drawControl(QStyle.CE_ComboBoxLabel, 选)
+
+
 def _记忆预算(套):
     """这段记忆最多能占多少 token。**算法在 `酒馆记忆.预算` 里**（三个地方共用
     同一份，见那个函数）—— 这儿只负责把"这套接口的窗口"取出来。"""
@@ -739,17 +760,19 @@ class 对话页(QWidget):
         # ⚠ **这一段对话用哪套接口，在这儿换。** 放在输入区这一行是有意的：
         # 它跟"这一条要发给谁"是同一个决定，而消息区那边一个字都不用动。
         钮排.addWidget(QLabel('接口'))
-        self.配置 = QComboBox()
+        self.配置 = _省略下拉()
         self.配置.setMinimumWidth(210)
-        # 名字（尤其模型文件名）很长，**按最长的那条把下拉撑开**，别让它显示成
-        # "千问 · qwen2.5-3b-in…" —— 那样根本分不清哪套是哪套。条目换了之后
-        # `_填配置下拉` 会重量一遍宽度。
-        self.配置.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-        self.配置.setToolTip(
+        # ⚠ **别用 `AdjustToContents`。** 那会让框去装下最长那条，而那个宽度会成为
+        # **整个窗口的最小宽度** —— 名字长（名称 · 模型文件名）时窗口被顶开。改用
+        # "按 N 个字量"，配上 `_省略下拉` 的省略号；完整名字进 tooltip。
+        self.配置.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.配置.setMinimumContentsLength(16)
+        self._配置说明 = (
             '这一段对话用哪套接口配置。列的是「接口配置」里的**全部**几套，'
             '想用哪套点哪套。\n\n'
             '**只影响这一段对话** —— 别的会话各用各的，新开的对话仍然是'
             '"没指定"（落到最早建的那套）。')
+        self.配置.setToolTip(self._配置说明)
         self.配置.currentIndexChanged.connect(self._换接口)
         钮排.addWidget(self.配置)
         # ⚠ **紧跟下拉的一格小字，专门说"这会儿为什么不能换"。**
@@ -828,22 +851,30 @@ class 对话页(QWidget):
 
     def _撑开下拉(self):
         """
-        按**最长的那一条**把下拉撑开，让整套配置名（名称 + 模型文件名）都看得见。
+        下拉的**宽度**：框本身**封顶**（不撑窗口），弹出的列表按最长条目撑开。
 
-        ⚠ **宽度得自己用字体量，光靠 `AdjustToContents` 不够。** 那个策略只管
-        下拉自己那个框，**弹出来的那张列表是另一个控件**（宽度默认跟着下拉
-        走，窄了就照样省略号）。量一遍、两边一起设最省事。
+        ⚠ **从前是"按最长的那条把框本身撑开"** —— 名字长（名称 · 模型文件名）时，
+        那个最小宽度会变成**整个窗口的最小宽度**，窗口就被顶开了。现在：框本身封顶、
+        装不下走省略号（见 `_省略下拉`）、完整名字进 tooltip。
 
-        ⚠ 这一格是从**布局里抢地方**的：它右边的「提示」是 stretch 的，下拉
-        宽了就挤那边。所以不能写死一个大数 —— 得按真有哪几套算。
+        ⚠ **弹出的列表是另一个窗口**，撑开它**不影响主窗口宽度**，所以那儿照样
+        按最长条目撑开，把整条显示全。
         """
         米 = self.配置.fontMetrics()
         宽 = 0
         for i in range(self.配置.count()):
             宽 = max(宽, 米.horizontalAdvance(self.配置.itemText(i)))
         宽 += 56                       # 左右内边距 + 右边那个下拉箭头
-        self.配置.setMinimumWidth(max(210, 宽))
-        self.配置.view().setMinimumWidth(宽)
+        # 框本身：只给一个"够用"的宽度，**不跟着最长那条约**（这就是"不撑窗口"的关键）。
+        self.配置.setMinimumWidth(210)
+        try:
+            屏 = self.screen().availableGeometry().width() if self.screen() else 1200
+        except Exception:
+            屏 = 1200
+        self.配置.view().setMinimumWidth(min(宽, int(屏 * 0.9)))
+        # 完整名字进 tooltip（闭合时被省略号截了，靠它看全）。
+        当前 = self.配置.currentText()
+        self.配置.setToolTip((('这一段用：%s\n\n' % 当前) if 当前 else '') + self._配置说明)
 
     def _刷接口说明(self):
         """

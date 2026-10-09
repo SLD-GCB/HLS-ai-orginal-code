@@ -8,7 +8,7 @@
 打出来的东西是「一体化 exe + 依赖库 + 配套文件夹」，在 `dist/` 下：
 
     鸿胪寺.exe    全部 Python 代码 + Python 运行时 + 标准库（**不含**任何第三方依赖）
-    依赖库/       `根依赖` 那 5 个根包 + 从它们递归算出来的**全部传递依赖** ——
+    依赖库/       `根依赖` 里列的那几个根包 + 从它们递归算出来的**全部传递依赖** ——
                   运行时由 exe 挂进 sys.path。numpy / jinja2（llama_cpp 拖进来的）、
                   pyyaml / httpx / tqdm（huggingface_hub 拖进来的）都从这条路进来，
                   **不手写清单**（见下面「三个支点」第 1 条）
@@ -19,7 +19,7 @@
 
 # 这套切法为什么不会「exe 里排了、依赖库里忘了拷」
 
-`算闭包()` 从 5 个根包递归算出全部传递依赖，得到的**顶层条目**一份两用：
+`算闭包()` 从 `根依赖` 递归算出全部传递依赖，得到的**顶层条目**一份两用：
 
   · 拷进 `依赖库/` 的就是它们
   · `--exclude-module` 排掉的也是它们
@@ -32,7 +32,7 @@
 
 1. **依赖闭包**用 `importlib.metadata` + `packaging.requirements` 算。
    必须**求值环境标记**、**跳过 `extra == ...`**——不这么做的话，modelscope
-   声明的可选依赖会把 torch / tensorflow / datasets 全拖进来，37 个包瞬间变 648 个。
+   声明的可选依赖会把 torch / tensorflow / datasets 全拖进来，几十个包瞬间变 648 个。
 
 2. **运行时钩子**（见 `写运行时钩子`）在 PyInstaller bootstrap 阶段执行，
    比 `酒馆.py` 里那些 `from PySide6.QtCore import ...` 早。
@@ -123,7 +123,13 @@ EXE名 = '鸿胪寺'
 图标容差 = 40
 
 # 依赖闭包的根。改这里 = 同时改「依赖库装什么」和「exe 排什么」。
-根依赖 = ['PySide6', 'llama-cpp-python', 'requests', 'modelscope', 'huggingface-hub']
+# ⚠ `cryptography` 是 **`酒馆隧道.py` 专用的**：派生身份（P-256 私钥/自签证书）
+#   和公钥指纹两处，全项目就这一处 import（还是惰性的，在函数体里）。
+#   不进这里的话 PyInstaller 照样能扫到它、把它**打进 exe** —— 结果 exe 里混进
+#   第三方依赖，跟文件头那条「exe 不含任何第三方依赖」对不上，也和 `依赖库/`
+#   不是同一份真源了（正是这次要根除的那种静默变形）。它自己拖着 cffi / pycparser。
+根依赖 = ['PySide6', 'llama-cpp-python', 'requests', 'modelscope', 'huggingface-hub',
+          'cryptography']
 
 # ── 本地模型的两套后端 ──────────────────────────────────────────────
 # 为什么两套：见文件头「本地模型为什么非得带两套 DLL」。一句话 —— CUDA 那套的
@@ -455,7 +461,9 @@ def 环境自检():
     except Exception as 错:
         缺.append('packaging（pip install packaging）：%s' % 错)
 
-    for 名 in ('PySide6', 'llama_cpp'):
+    # cryptography 是 `酒馆隧道.py` 的根依赖（见 `根依赖` 那段的说明）—— 缺了
+    # 隧道起不来。与其等 [14] 出口校验才发现，不如在这儿就点名。
+    for 名 in ('PySide6', 'llama_cpp', 'cryptography'):
         在 = 导入工.find_spec(名) is not None
         print('  %-13s %s' % (名, '在' if 在 else '**缺**'))
         if not 在:
@@ -559,7 +567,7 @@ def 算闭包():
 
       · **求值环境标记**（`; python_version < "3.9"` 之类）—— 本机跑不上的就不该收
       · **跳过 `extra == ...`** —— 那是可选依赖。不跳的话 modelscope 会把
-        torch / tensorflow / datasets 全拖进来，37 个包变 648 个、几个 GB。
+        torch / tensorflow / datasets 全拖进来，几十个包变 648 个、几个 GB。
 
     返回 (发行包清单, 顶层条目集合, 没装上但被依赖的包名)。
     """
@@ -2305,6 +2313,9 @@ def 出口校验(顶层们, 图标png=None):
                'requests' + os.sep + '__init__.py',
                'modelscope' + os.sep + '__init__.py',
                'huggingface_hub' + os.sep + '__init__.py',
+               # 酒馆隧道 派生身份 / 公钥指纹用（见 `根依赖` 那段的说明）。缺了
+               # 隧道起不来 —— 手机连上却在「局域网互联…」里报身份生成失败。
+               'cryptography' + os.sep + '__init__.py',
                # 稳定 ABI 转发层。少了它 PySide6 全线起不来，而报错报的是
                # 「找不到 shiboken」—— 见 `拷解释器DLL` 那段。
                'python3.dll']:
